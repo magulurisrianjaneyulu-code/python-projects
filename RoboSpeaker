@@ -1,0 +1,19 @@
+import win32com.client
+import threading
+def speak(text):
+    speaker = win32com.client.Dispatch("SAPI.SpVoice")
+    speaker.Volume = 100
+    speaker.Rate = 0
+    speaker.Speak(text)
+    speaker = None
+print("Welcome to RoboSpeaker!")
+print("Type q to exit.")
+while True:
+    text = input("Enter what you want me to speak: ")
+    if text.lower() == "q":
+        speak("Bye bye friend!")
+        break
+    # Speak every input
+    thread = threading.Thread(target=speak, args=(text,))
+    thread.start()
+    thread.join()
