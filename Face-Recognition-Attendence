@@ -1,0 +1,556 @@
+import cv2
+import os
+import csv
+import json
+import urllib.request
+from datetime import datetime
+
+
+# =========================================================
+# SETTINGS
+# =========================================================
+
+MODEL_FOLDER = "models"
+
+YUNET_MODEL = os.path.join(
+    MODEL_FOLDER,
+    "face_detection_yunet_2026may.onnx"
+)
+
+SFACE_MODEL = os.path.join(
+    MODEL_FOLDER,
+    "face_recognition_sface_2021dec.onnx"
+)
+
+STUDENT_FILE = "students.json"
+ATTENDANCE_FILE = "attendance.csv"
+
+YUNET_URL = (
+    "https://github.com/opencv/opencv_zoo/raw/refs/heads/main/"
+    "models/face_detection_yunet/"
+    "face_detection_yunet_2026may.onnx"
+)
+
+SFACE_URL = (
+    "https://github.com/opencv/opencv_zoo/raw/refs/heads/main/"
+    "models/face_recognition_sface/"
+    "face_recognition_sface_2021dec.onnx"
+)
+
+COSINE_THRESHOLD = 0.45
+
+
+# =========================================================
+# DOWNLOAD MODELS
+# =========================================================
+
+def download_file(url, filename):
+    print("\nDownloading:")
+    print(filename)
+    print("Please wait...")
+
+    urllib.request.urlretrieve(url, filename)
+
+    print("Download completed!")
+
+
+def setup_models():
+
+    os.makedirs(MODEL_FOLDER, exist_ok=True)
+
+    if not os.path.exists(YUNET_MODEL):
+        download_file(YUNET_URL, YUNET_MODEL)
+
+    if not os.path.exists(SFACE_MODEL):
+        download_file(SFACE_URL, SFACE_MODEL)
+
+
+# =========================================================
+# LOAD MODELS
+# =========================================================
+
+def load_models():
+
+    print("\nLoading face detection model...")
+
+    detector = cv2.FaceDetectorYN.create(
+        YUNET_MODEL,
+        "",
+        (320, 320),
+        0.9,
+        0.3,
+        5000
+    )
+
+    print("Loading face recognition model...")
+
+    recognizer = cv2.FaceRecognizerSF.create(
+        SFACE_MODEL,
+        ""
+    )
+
+    print("Models loaded successfully!")
+
+    return detector, recognizer
+
+
+# =========================================================
+# DETECT FACE
+# =========================================================
+
+def detect_faces(detector, frame):
+
+    height, width = frame.shape[:2]
+
+    detector.setInputSize((width, height))
+
+    result = detector.detect(frame)
+
+    faces = result[1]
+
+    if faces is None:
+        return []
+
+    return faces
+
+
+# =========================================================
+# GET FACE FEATURE
+# =========================================================
+
+def get_feature(recognizer, frame, face):
+
+    aligned_face = recognizer.alignCrop(
+        frame,
+        face
+    )
+
+    feature = recognizer.feature(
+        aligned_face
+    )
+
+    return feature
+
+
+# =========================================================
+# LOAD STUDENTS
+# =========================================================
+
+def load_students():
+
+    if not os.path.exists(STUDENT_FILE):
+        return {}
+
+    with open(
+        STUDENT_FILE,
+        "r",
+        encoding="utf-8"
+    ) as file:
+
+        return json.load(file)
+
+
+# =========================================================
+# SAVE STUDENTS
+# =========================================================
+
+def save_students(students):
+
+    with open(
+        STUDENT_FILE,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        json.dump(
+            students,
+            file,
+            indent=4
+        )
+
+
+# =========================================================
+# REGISTER STUDENT
+# =========================================================
+
+def register_student(detector, recognizer):
+
+    print("\n================================")
+    print("       STUDENT REGISTRATION")
+    print("================================")
+
+    name = input("Enter student name: ").strip()
+
+    if name == "":
+        print("Name cannot be empty.")
+        return
+
+    students = load_students()
+
+    if name in students:
+        print("Student already registered.")
+        return
+
+    print("\nCamera starting...")
+    print("Look at the camera.")
+    print("Press SPACE to capture.")
+    print("Press Q to cancel.")
+
+    camera = cv2.VideoCapture(0)
+
+    if not camera.isOpened():
+        print("ERROR: Camera could not be opened.")
+        return
+
+    feature = None
+
+    while True:
+
+        success, frame = camera.read()
+
+        if not success:
+            print("Could not read camera.")
+            break
+
+        faces = detect_faces(
+            detector,
+            frame
+        )
+
+        for face in faces:
+
+            x, y, w, h = face[:4].astype(int)
+
+            cv2.rectangle(
+                frame,
+                (x, y),
+                (x + w, y + h),
+                (0, 255, 0),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                "Face detected",
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2
+            )
+
+        cv2.putText(
+            frame,
+            "SPACE = Capture | Q = Cancel",
+            (20, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2
+        )
+
+        cv2.imshow(
+            "Student Registration",
+            frame
+        )
+
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord("q"):
+            break
+
+        if key == 32:
+
+            if len(faces) == 0:
+                print("No face detected. Try again.")
+                continue
+
+            if len(faces) > 1:
+                print("Please keep only one person in front of camera.")
+                continue
+
+            feature = get_feature(
+                recognizer,
+                frame,
+                faces[0]
+            )
+
+            print("Face captured successfully!")
+            break
+
+    camera.release()
+    cv2.destroyAllWindows()
+
+    if feature is None:
+        return
+
+    students[name] = feature.flatten().tolist()
+
+    save_students(students)
+
+    print("\nStudent registered successfully!")
+    print("Name:", name)
+
+
+# =========================================================
+# ATTENDANCE
+# =========================================================
+
+def mark_attendance(name):
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    current_time = datetime.now().strftime("%H:%M:%S")
+
+    file_exists = os.path.exists(
+        ATTENDANCE_FILE
+    )
+
+    already_marked = False
+
+    if file_exists:
+
+        with open(
+            ATTENDANCE_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
+
+            reader = csv.reader(file)
+
+            for row in reader:
+
+                if len(row) >= 2:
+
+                    if row[0] == name and row[1] == today:
+
+                        already_marked = True
+                        break
+
+    if already_marked:
+        return False
+
+    with open(
+        ATTENDANCE_FILE,
+        "a",
+        newline="",
+        encoding="utf-8"
+    ) as file:
+
+        writer = csv.writer(file)
+
+        if not file_exists:
+
+            writer.writerow(
+                ["Name", "Date", "Time"]
+            )
+
+        writer.writerow(
+            [name, today, current_time]
+        )
+
+    return True
+
+
+# =========================================================
+# RUN ATTENDANCE
+# =========================================================
+
+def start_attendance(detector, recognizer):
+
+    students = load_students()
+
+    if len(students) == 0:
+
+        print("\nNo students registered.")
+        print("Please register a student first.")
+
+        return
+
+    print("\n================================")
+    print("       FACE ATTENDANCE")
+    print("================================")
+
+    print("Press Q to exit.")
+
+    camera = cv2.VideoCapture(0)
+
+    if not camera.isOpened():
+
+        print("ERROR: Camera could not be opened.")
+
+        return
+
+    while True:
+
+        success, frame = camera.read()
+
+        if not success:
+            break
+
+        faces = detect_faces(
+            detector,
+            frame
+        )
+
+        for face in faces:
+
+            x, y, w, h = face[:4].astype(int)
+
+            current_feature = get_feature(
+                recognizer,
+                frame,
+                face
+            )
+
+            best_name = "Unknown"
+            best_score = -1
+
+            for name, saved_feature in students.items():
+
+                saved_feature = cv2.UMat(
+                    saved_feature
+                ).get()
+
+                saved_feature = saved_feature.reshape(
+                    1, -1
+                ).astype("float32")
+
+                score = recognizer.match(
+                    current_feature,
+                    saved_feature,
+                    cv2.FaceRecognizerSF_FR_COSINE
+                )
+
+                if score > best_score:
+
+                    best_score = score
+                    best_name = name
+
+            if best_score >= COSINE_THRESHOLD:
+
+                color = (0, 255, 0)
+
+                marked = mark_attendance(
+                    best_name
+                )
+
+                if marked:
+
+                    print(
+                        f"Attendance marked: {best_name}"
+                    )
+
+                label = (
+                    f"{best_name} "
+                    f"{best_score:.2f}"
+                )
+
+            else:
+
+                color = (0, 0, 255)
+
+                label = (
+                    f"Unknown "
+                    f"{best_score:.2f}"
+                )
+
+            cv2.rectangle(
+                frame,
+                (x, y),
+                (x + w, y + h),
+                color,
+                2
+            )
+
+            cv2.putText(
+                frame,
+                label,
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2
+            )
+
+        cv2.putText(
+            frame,
+            "Press Q to Exit",
+            (20, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2
+        )
+
+        cv2.imshow(
+            "Face Recognition Attendance",
+            frame
+        )
+
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord("q"):
+            break
+
+    camera.release()
+    cv2.destroyAllWindows()
+
+
+# =========================================================
+# MAIN MENU
+# =========================================================
+
+def main():
+
+    print("======================================")
+    print("   FACE RECOGNITION ATTENDANCE")
+    print("======================================")
+
+    print("OpenCV Version:", cv2._version_)
+
+    setup_models()
+
+    detector, recognizer = load_models()
+
+    while True:
+
+        print("\n================================")
+        print("1. Register Student")
+        print("2. Start Attendance")
+        print("3. Exit")
+        print("================================")
+
+        choice = input(
+            "Enter your choice: "
+        ).strip()
+
+        if choice == "1":
+
+            register_student(
+                detector,
+                recognizer
+            )
+
+        elif choice == "2":
+
+            start_attendance(
+                detector,
+                recognizer
+            )
+
+        elif choice == "3":
+
+            print("Program closed.")
+            break
+
+        else:
+
+            print("Invalid choice.")
+
+
+# =========================================================
+# START PROGRAM
+# =========================================================
+
+if __name__ == "_main_":
+    main()
