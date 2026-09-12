@@ -1,0 +1,14 @@
+from PyPDF2 import PdfMerger
+
+pdf_files = ["pdf1.pdf", "pdf22.pdf", "samplepdf.pdf"]
+
+pdf_merger = PdfMerger()
+
+for filename in pdf_files:
+    pdf_merger.append(filename)
+
+pdf_merger.write("merged.pdf")
+pdf_merger.close()
+
+print("PDF files merged successfully!")
+print("Created: merged.pdf")
